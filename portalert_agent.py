@@ -2,7 +2,7 @@
 
 Uso:
   portalert-agent enroll --server http://localhost:8001 --token <TOKEN> [--name MI-PC]
-  portalert-agent scan [--json]
+  portalert-agent run [--once] [--interval 60]
 """
 import argparse
 import hashlib
@@ -12,6 +12,7 @@ import platform
 import socket
 import stat
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,7 @@ MAX_ELEMENTOS = 2000
 
 
 def config_path() -> Path:
-    override = os.environ.get("PORTALERT_CONFIG") 
+    override = os.environ.get("PORTALERT_CONFIG")
     if override:
         return Path(override)
     if sys.platform == "win32":
@@ -60,6 +61,8 @@ def os_info() -> tuple[str, str]:
         version = f"Windows {platform.release()} ({platform.version()})"
     return family, version[:100]
 
+
+#  enroll 
 def cmd_enroll(args) -> None:
     family, version = os_info()
     r = httpx.post(
@@ -78,6 +81,7 @@ def cmd_enroll(args) -> None:
     print(f"Dispositivo vinculado. Configuración guardada en {path}")
 
 
+#  recolección 
 def sha256_of(path: str | None) -> str | None:
     try:
         if not path or os.path.getsize(path) > MAX_HASH_BYTES:
@@ -145,20 +149,34 @@ def collect() -> dict:
     return {"processes": processes[:MAX_ELEMENTOS], "ports": ports[:MAX_ELEMENTOS]}
 
 
-# escaneo local 
-def cmd_scan(args) -> None:
-    """Muestra lo que el agente reportaría, sin enviarlo a ningún lado."""
+# envío 
+def send_report(cfg: dict) -> None:
     report = collect()
-    if args.json:
-        print(json.dumps(report, indent=2))
-        return
-    print(f"{len(report['ports'])} puertos en escucha, {len(report['processes'])} procesos:")
-    for p in report["ports"]:
-        print(f"  {p['protocol']}/{p['port']:<5} {p['bind_address']:<15} pid={p['pid']}")
-    for p in report["processes"]:
-        sha = (p["sha256"] or "sin hash")[:12]
-        extra = " [binario borrado]" if p["exe_deleted"] else ""
-        print(f"  pid={p['pid']:<7} {p['name']:<24} {sha}{extra}")
+    r = httpx.post(
+        f"{cfg['server']}/reports",
+        json=report,
+        headers={"X-API-Key": cfg["api_key"]},
+        timeout=30,
+    )
+    if r.status_code == 401:
+        sys.exit("La API key ya no es válida (¿borraste el dispositivo?). Vincula de nuevo.")
+    r.raise_for_status()
+    print(
+        f"Reporte enviado: {len(report['ports'])} puertos, "
+        f"{len(report['processes'])} procesos, score={r.json().get('score')}"
+    )
+
+
+def cmd_run(args) -> None:
+    cfg = load_config()
+    while True:
+        try:
+            send_report(cfg)
+        except httpx.HTTPError as e:
+            print(f"Error de red, reintento en el próximo ciclo: {e}", file=sys.stderr)
+        if args.once:
+            return
+        time.sleep(args.interval)
 
 
 def main() -> None:
@@ -171,9 +189,10 @@ def main() -> None:
     e.add_argument("--name")
     e.set_defaults(fn=cmd_enroll)
 
-    s = sub.add_parser("scan", help="muestra los puertos y procesos detectados, sin enviarlos")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_scan)
+    r = sub.add_parser("run", help="envía reportes periódicos")
+    r.add_argument("--once", action="store_true")
+    r.add_argument("--interval", type=int, default=60)
+    r.set_defaults(fn=cmd_run)
 
     args = ap.parse_args()
     args.fn(args)
