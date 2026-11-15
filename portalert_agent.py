@@ -19,11 +19,11 @@ import httpx
 import psutil
 
 MAX_HASH_BYTES = 200 * 1024 * 1024
-MAX_ELEMENTOS = 2000  
+MAX_ELEMENTOS = 2000  # igual que MAX_ELEMENTOS_REPORTE del backend
 
 
 def config_path() -> Path:
-    override = os.environ.get("PORTALERT_CONFIG")
+    override = os.environ.get("PORTALERT_CONFIG")  # lo usan los instaladores (servicio del sistema)
     if override:
         return Path(override)
     if sys.platform == "win32":
@@ -62,7 +62,7 @@ def os_info() -> tuple[str, str]:
     return family, version[:100]
 
 
-#  enroll 
+# ------------------------------- enroll -------------------------------
 def cmd_enroll(args) -> None:
     family, version = os_info()
     r = httpx.post(
@@ -81,7 +81,7 @@ def cmd_enroll(args) -> None:
     print(f"Dispositivo vinculado. Configuración guardada en {path}")
 
 
-#  recolección 
+# ------------------------------- recolección -------------------------------
 def sha256_of(path: str | None) -> str | None:
     try:
         if not path or os.path.getsize(path) > MAX_HASH_BYTES:
@@ -149,7 +149,7 @@ def collect() -> dict:
     return {"processes": processes[:MAX_ELEMENTOS], "ports": ports[:MAX_ELEMENTOS]}
 
 
-# envío 
+# ------------------------------- envío -------------------------------
 def send_report(cfg: dict) -> None:
     report = collect()
     r = httpx.post(
