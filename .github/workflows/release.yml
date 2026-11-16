@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: portalert-agent-linux
+            built: dist/portalert-agent
+          - os: windows-latest
+            asset: portalert-agent.exe
+            built: dist/portalert-agent.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --onefile --name portalert-agent portalert_agent.py
+      - shell: bash
+        run: |
+          mkdir out
+          cp "${{ matrix.built }}" "out/${{ matrix.asset }}"
+          cd out
+          sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          cat "${{ matrix.asset }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
