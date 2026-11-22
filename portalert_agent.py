@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import socket
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -95,6 +97,59 @@ def sha256_of(path: str | None) -> str | None:
         return None
 
 
+_PKG_CACHE: dict[str, str | None] = {}
+
+
+def _run(cmd: list[str]) -> str | None:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _candidatas(path: str) -> list[str]:
+    """Rutas a probar: la original, la real (symlinks) y la variante sin /usr (usrmerge: /bin -> /usr/bin)."""
+    rutas = [path]
+    real = os.path.realpath(path)
+    if real not in rutas:
+        rutas.append(real)
+    for r in list(rutas):
+        if r.startswith("/usr/") and r[4:] not in rutas:
+            rutas.append(r[4:])
+    return rutas
+
+
+def package_of(path: str | None) -> str | None:
+    """Nombre del paquete (dpkg/rpm) al que pertenece el ejecutable. Solo Linux; None si no se puede saber."""
+    if sys.platform != "linux" or not path:
+        return None
+    if path in _PKG_CACHE:
+        return _PKG_CACHE[path]
+    pkg = None
+    if shutil.which("dpkg"):
+        for ruta in _candidatas(path):
+            salida = _run(["dpkg", "-S", ruta])
+            for linea in (salida or "").splitlines():
+                if linea.startswith("diversion by"):
+                    continue
+                if ": " in linea:
+                    # "openssh-server: /usr/sbin/sshd", "libc6:amd64: /lib/..." o "pkg1, pkg2: /ruta"
+                    pkg = linea.split(": ", 1)[0].split(",")[0].split(":")[0].strip()
+                    break
+            if pkg:
+                break
+    elif shutil.which("rpm"):
+        for ruta in _candidatas(path):
+            salida = _run(["rpm", "-qf", "--qf", "%{NAME}\\n", ruta])
+            if salida and salida.strip() and "not owned" not in salida:
+                pkg = salida.splitlines()[0].strip()
+                break
+    pkg = pkg[:200] if pkg else None
+    _PKG_CACHE[path] = pkg
+    return pkg
+
+
 def collect() -> dict:
     ports, pids = [], set()
     try:
@@ -141,6 +196,7 @@ def collect() -> dict:
                     "exe_path": exe,
                     "username": user[:100] if user else None,
                     "sha256": None if deleted else sha256_of(exe),
+                    "package": None if deleted else package_of(exe),
                     "exe_deleted": deleted,
                 }
             )
